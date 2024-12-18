@@ -1,0 +1,23 @@
+Ingress ================================
+
+Ingress refers to incoming traffic to a system, network, or application. It is the traffic initiated from an external source and directed towards your infrastructure or resources, such as web requests to a web server, or data being sent to a storage bucket.
+
+Example: A user accessing a website hosted on a server.
+Ingress rules: In networking, ingress rules define what kind of traffic is allowed to enter a system, such as IP ranges, protocols, or ports.
+
+Egress ===================================
+
+Egress refers to outgoing traffic from a system, network, or application. It is the traffic that originates from your infrastructure or resources and goes towards an external system or destination.
+
+Example: A server sending an API request to a third-party service.
+Egress rules: These define what kind of traffic is allowed to leave a system, such as protocols, destination IPs, or ports.
+Key Differences
+Aspect	Ingress	Egress
+Direction	Traffic entering a system.	Traffic leaving a system.
+Initiator	External entity (e.g., client).	Internal entity (e.g., server).
+Use case	Managing access to resources.	Controlling outbound communication.
+Firewall Rules	Ingress rules allow incoming traffic.	Egress rules allow outgoing traffic.
+Examples	HTTP requests to a web server.	Database queries to an external system.
+Real-Life Example in AWS
+Ingress: An AWS Security Group rule allowing HTTP (port 80) traffic from the internet to an EC2 instance.
+Egress: An AWS Security Group rule allowing an EC2 instance to access an external API or database over HTTPS (port 443).
