@@ -44,3 +44,72 @@ Step 2: Jenkins fetches the latest code using the Git URL and branch specified i
 Step 3: Jenkins executes the build steps defined in the pipeline or job (e.g., running tests, packaging, deploying).
 Best Practice: Use Webhooks for Efficiency
 Webhooks are faster, more reliable, and reduce unnecessary load on Jenkins servers, making them the preferred approach for detecting code pushes.
+
+
+
+
+# GIT TOP 10 INTERVIEW QUESTION AND ANSWER
+
+
+Here are 10 interview questions and answers related to Git for a DevOps Engineer role:
+
+1. What is Git, and why is it important in DevOps?
+Answer:
+Git is a distributed version control system used to track changes in source code during software development. In DevOps, Git enables collaboration among team members, facilitates CI/CD pipelines, and ensures code consistency. Its branching and merging capabilities allow multiple developers to work simultaneously on the same project without conflicts.
+
+2. Explain the difference between Git and GitHub.
+Answer:
+Git is a version control system for managing source code, while GitHub is a cloud-based platform for hosting Git repositories. GitHub provides additional features like collaboration tools, pull requests, issue tracking, and integration with CI/CD pipelines.
+
+3. What is the purpose of branching in Git?
+Answer:
+Branching in Git allows developers to create isolated workspaces for developing features, fixing bugs, or experimenting without affecting the main codebase. Common branch types include:
+Main branch: The production-ready code.
+Feature branch: For developing new features.
+Hotfix branch: For quick fixes to production issues.
+
+4. How do you resolve merge conflicts in Git?
+Answer:
+To resolve merge conflicts:
+Identify conflicting files using Git commands like git status.
+Open the conflicted file and locate conflict markers (<<<<<<, ======, >>>>>>).
+Manually edit the file to resolve conflicts by keeping the desired code.
+Mark the conflict as resolved with git add <file>.
+Commit the changes using git commit.
+
+5. What is the purpose of the .gitignore file?
+Answer:
+The .gitignore file specifies intentionally untracked files to ignore in a Git repository. Examples include temporary files, build artifacts, and sensitive data. This prevents such files from being accidentally committed to the repository.
+
+
+6. How would you handle a situation where you accidentally committed sensitive information to a Git repository?
+Answer:
+Use git log to find the commit containing sensitive information.
+Remove the sensitive data using git filter-repo or git rebase to rewrite history.
+Force push the changes with git push --force.
+Rotate any compromised credentials immediately.
+
+7. What is the difference between git pull and git fetch?
+Answer:
+git pull: Fetches changes from a remote repository and merges them into the current branch.
+git fetch: Fetches changes from the remote repository without merging. It allows you to review changes before integrating them.
+
+8. How do you revert a commit in Git?
+Answer:
+To undo the last commit without losing changes:
+git reset --soft HEAD~1
+To undo the last commit and discard changes:
+git reset --hard HEAD~1
+To create a new commit that undoes a previous commit:
+git revert <commit-hash>
+
+9. What are Git tags, and how are they used in DevOps?
+Answer:
+Git tags are references to specific commits, often used to mark release points (e.g., v1.0). In DevOps, tags are used to identify stable builds for deployment, allowing easy rollbacks or tracking of deployed versions.
+
+10. How do you ensure a clean codebase in a collaborative environment?
+Answer:
+Enforce pull request workflows with code reviews.
+Use branch protection rules to restrict direct commits to the main branch.
+Integrate Git hooks for pre-commit checks (e.g., linting, tests).
+Use CI/CD pipelines to automate testing and deployment.
