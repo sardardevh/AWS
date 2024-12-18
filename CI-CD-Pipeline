@@ -1,0 +1,1128 @@
+stage('SonarQube Analysis') {
+    	script {
+		print "=========================== SonarQube analysis - Started=================================="
+		selectedEnv = env.SELECTED_ENV
+		withSonarQubeEnv(credentialsId: 'sonarprod-token') {
+		sh """/opt/homebrew/Cellar/sonar-scanner/6.0.0.4432/bin/sonar-scanner \\
+							-Dsonar.host.url="http://170.108.72.171:9000" \\
+							-Dsonar.projectKey="AHM_DSD_MOBILE_APP_IOS" \\
+							-Dsonar.language=swift \\
+							-Dsonar.sourceEncoding=UTF-8 \\
+							-Dsonar.verbose=true \\
+							-Dsonar.c.file.suffixes=- \\
+							-Dsonar.cpp.file.suffixes=- \\
+							-Dsonar.objc.file.suffixes=- \\
+							-Dsonar.analysis.buildNumber=${BUILD_NUMBER} \\
+				        		-Dsonar.webhooks.project=https://ahmpxljenkins01.aws.honda.com:8443/sonarqube-webhook/ \\
+							-Dsonar.exclusions=Jenkinsfile*/,Pods*/,AcuraLinkBuild*/,HondaLinkBuild*/,Archives*/,IPA_Files*/,veracode*/,VeracodeDebugBuild*/,HondaNAiOSApp/DataLayer/*/,AcuraLink.entitlements*/,HondaLink.entitlements*/,'HondaNAWatch Extension/AcuraWatchExtensionAssets.xcassets*/','HondaNAWatch Extension/HondaWatchExtensionAssets.xcassets*/' """
+						
+                   }
+		print "===============================SonarQube analysis - Completed==================================================="
+    	}
+} 
+stage("Sonar Quality Gate"){
+		script{
+		sleep 30
+		def reportFile = '.scannerwork/report-task.txt'
+
+	        // Run the shell command to extract the TaskId and store it in the processid variable
+		def taskId = sh(script: "grep TaskId ${reportFile}", returnStdout: true).trim()
+		def taskIdSplit = taskId.split('=')
+		def processID = taskIdSplit[1]
+		echo "Extracted TaskId: ${processID}"
+		env.PROCESS_ID = processID
+		sh '''
+		#!/bin/sh
+ 
+                  set -uxo pipefail
+		  echo "Process ID: ${PROCESS_ID}"
+		  processid=${PROCESS_ID}
+		  
+ 		  count=0
+ 		  maxLoops=100
+ 		  while [ ${count} -lt ${maxLoops} ] ; do
+                    
+                    curl -X GET -H "Accept: application/json" http://170.108.72.171:9000/api/ce/task?id=${processid} | python3 -m json.tool > process.json
+ 		    sonarstatus=$(cat process.json | /opt/homebrew/bin/jq .task.status -r)
+			echo "sonarstatus ** ID: ${sonarstatus}"
+ 		    if [ 'SUCCESS' == "${sonarstatus}" ] ; then
+ 			break
+                    fi
+                    count=$((count + 1))
+                    sleep 10
+                  done
+ 
+                  if [ ${count} -ge ${maxLoops} ] ; then
+                    echo "Did not get a SUCCESS from sonarqube for processid=${processid}"
+ 		  exit 1
+                  fi
+
+                  curl -f -u 2be4ae358cbab0728a1403746e6009f472e41697: -X GET -H "Accept:application/json" "http://170.108.72.171:9000/api/qualitygates/project_status?projectKey=AHM_DSD_MOBILE_APP_IOS&branch=${BRANCH_NAME}" | python3 -m json.tool > status.json
+ 
+                  projectStatus=$(cat status.json | /opt/homebrew/bin/jq .projectStatus.status -r)
+ 
+                  set -e
+ 
+                  if [ 'OK' != "${projectStatus}" ] ; then
+                    echo "Did not get an OK for projectStatus=${projectStatus}"
+                    exit 1
+                  fi
+                  EXIT_CODE="$?"
+ 		  if [ "$EXIT_CODE" != 0 ] ; then
+                    exit $EXIT_CODE
+                  fi
+		'''
+	}
+}
+
+stage("Dependency Installation") {
+	script{
+    		print "=========================== Cocoapods Dependency Installation - Started ==========================="
+		retry(5){
+			sh '/usr/local/bin/pod cache clean --all'
+                	sh '/usr/local/bin/pod deintegrate'
+                	sh '/usr/local/bin/pod install'
+		}
+		currentDate = new Date().format('yyyy-MM-dd_HH-mm-ss')
+		sh "echo \$KEYCHAIN_PASSWORD | sudo -S security set-keychain-settings -lu -t 7200 /Library/Keychains/System.keychain"				
+		sh "echo \$KEYCHAIN_PASSWORD | sudo -S security unlock-keychain -p '${KEYCHAIN_PASSWORD}' /Library/Keychains/System.keychain"
+				
+		print "=========================== Cocoapods Dependency Installation - Completed ==========================="
+		}
+	}
+stage("Parallel Build Archive") { 
+parallel(
+      HondaLink: {
+        stage('Build HondaLink') {
+		script{
+			print "=========================== Parallel Build - HondaLink - Build Archive - Started ============================================================================================================="
+                    	env.SELECTED_ENV = selectedEnv
+    		        echo "Generate HondaLink Archive file for Environment: ${selectedEnv}"
+    		        	
+                    	withEnv(["SELECTED_ENV=${selectedEnv}"]) {
+                        	env.folder_name_honda = "HondaLink-${selectedEnv}-${BUILD_NUMBER}-${currentDate}"
+                    	}
+                    	env.archive_name_honda = "HondaLink-${currentDate}.xcarchive"
+                    	def directoryPathHonda = "${env.WORKSPACE}/Archives/${env.folder_name_honda}"
+                    	sh "mkdir -p ${directoryPathHonda}"
+                    	sh "chmod 775 ${directoryPathHonda}" 
+		
+			sh """xcodebuild archive -workspace HondaNAiOSApp.xcworkspace \\
+				                                    -scheme HondaLink \\
+				                                    -configuration ${selectedEnv} \\
+				                                    -destination 'generic/platform=iOS' \\
+				                                    -archivePath ${directoryPathHonda}/${env.archive_name_honda} \\
+								    -derivedDataPath ${env.WORKSPACE}/HondaLinkBuild/"""
+			print "=========================== HondaLink Build Archive - Completed ======================================================================================"
+			}
+		}	
+      },
+      AcuraLink: {
+        stage('Build AcuraLink') {
+		script{
+			print "=========================== Parallel Build - AcuraLink Build Archive - Started ============================================================================================================="
+                    	env.SELECTED_ENV = selectedEnv
+    		        echo "Generate Archive file for Environment: ${selectedEnv}"
+    		        withEnv(["SELECTED_ENV=${selectedEnv}"]) {
+                        	env.folder_name_acura = "AcuraLink-${selectedEnv}-${BUILD_NUMBER}-${currentDate}"
+                    	}
+                    	env.archive_name_acura = "AcuraLink-${currentDate}.xcarchive"
+                    	def directoryPathAcura = "${env.WORKSPACE}/Archives/${env.folder_name_acura}"
+                    	sh "mkdir -p ${directoryPathAcura}"
+                    	sh "chmod 775 ${directoryPathAcura}" 
+			sh """xcodebuild archive -workspace HondaNAiOSApp.xcworkspace \\
+				                                    -scheme AcuraLink \\
+				                                    -configuration ${selectedEnv} \\
+				                                    -destination 'generic/platform=iOS' \\
+				                                    -archivePath ${directoryPathAcura}/${env.archive_name_acura} \\
+								    -derivedDataPath ${env.WORKSPACE}/AcuraLinkBuild/"""
+    		        print "=========================== Parallel Build - AcuraLink Build Archive - Completed ======================================================================================"
+    		       }
+		}
+	},
+	VeracodeBuild: {
+	stage("Build Archive in Debug for Veracode scan") {
+		script{
+			 print "=========================== Build Archive in Debug mode for Veracode scan - started ============================================================================================================="
+                         if(selectedEnv == 'ADEPQA' || selectedEnv == 'ADPQA' || selectedEnv == 'ADEPUAT' || selectedEnv == 'ADPUAT' || selectedEnv == 'ADEPPrePROD' || selectedEnv == 'PrePROD'){
+    		                echo "Generate Archive file using Debug mode for QA,UAT and PrePROD environments - Environment Debug"
+        		        
+                            	env.folder_name_debug = "HondaLink-Debug-${BUILD_NUMBER}-${currentDate}"
+                        	
+                        	env.archive_name_debug = "HondaLink-Debug-${currentDate}.xcarchive"
+                        	def directoryPathDebug = "${env.WORKSPACE}/veracode"
+                        	sh "mkdir -p ${directoryPathDebug}"
+                        	sh "chmod 775 ${directoryPathDebug}"
+    					
+        		        sh """xcodebuild archive -workspace HondaNAiOSApp.xcworkspace \\
+        		                                  -scheme HondaLink \\
+        		                                  -configuration Debug \\
+        		                                  -destination 'generic/platform=iOS' \\
+        		                                  -archivePath ${directoryPathDebug}/${env.archive_name_debug} \\
+							  -derivedDataPath ${env.WORKSPACE}/VeracodeDebugBuild \\
+        		                                  DEBUG_INFORMATION_FORMAT=dwarf-with-dsym ENABLE_BITCODE=NO \\
+        		                                  > ${directoryPathDebug}/HondaLink-Debug-${BUILD_NUMBER}.log.txt"""
+    			        sh "/opt/homebrew/bin/gen-ir ${directoryPathDebug}/HondaLink-Debug-${BUILD_NUMBER}.log.txt ${directoryPathDebug}/${env.archive_name_debug} --project-path HondaNAiOSApp.xcworkspace"
+        		        sh """ cd ${directoryPathDebug}; zip -r HondaLink-Debug-${BUILD_NUMBER}.zip ${env.archive_name_debug} """
+        		        sh "zip HondaLink-Podfile-Debug-${BUILD_NUMBER}.zip $env.WORKSPACE/Podfile.lock"
+                             	sh "mv HondaLink-Podfile-Debug-${BUILD_NUMBER}.zip $env.WORKSPACE/veracode"
+    		        }else{
+    		          echo "Skipping build archive in debug mode for ADEPPreStage, ADPPreStage for production environments"
+    		      	}
+			print "=========================== Build Archive in Debug mode for Veracode scan - Completed ============================================================================================================="    
+    	   	}
+	    }
+    	}
+   )
+}
+stage('Veracode Scan') {
+        script {
+		    print "=========================== iOS Veracode scan - Started ============================================================================================================="
+                    if(selectedEnv == 'ADEPQA' || selectedEnv == 'ADPQA'){
+	                        echo 'Running Veracode SAST scan for QA environment...Veracode SAST scan'
+	                        withCredentials([usernamePassword(credentialsId: 'dsd_veracode_cicd', passwordVariable: 'VC_PASS', usernameVariable: 'VC_ADMIN')]) {
+	                                    veracode applicationName: 'AHM_HondaLink-AcuraLink-IOS', criticality: 'Medium',
+	                                    debug: true, deleteIncompleteScanLevel: '0', fileNamePattern: '', replacementPattern: '',
+	                                    sandboxName: '', scanExcludesPattern: '', scanIncludesPattern:'', pHost:'na-proxy-srv.amerhonda.com',
+	                                    pPassword:'',pPort:'8080',pUser:'',scanName:"${BUILD_TAG}",teams:'',
+	                                    uploadIncludesPattern:'veracode/*.zip',useProxy:true,
+	                                    vid:VC_ADMIN, vkey:VC_PASS
+	                        }
+				sh """cd ${WORKSPACE}/veracode; rm -r ${env.archive_name_debug} *.zip"""
+	                    	sh """cd ${WORKSPACE}; rm -rf VeracodeDebugBuild"""
+    	                }else if(selectedEnv == 'ADEPUAT' || selectedEnv == 'ADPUAT'){
+                                echo 'Running Veracode SCA Agent scan for UAT environment... Veracode SCA Agent scan'
+                        	withCredentials([string(credentialsId: 'SRCCLR_API_TOKEN', variable: 'SRCCLR_API_TOKEN')]) {
+                                	sh """
+					export CUSTOM_JRE_DIR=/opt/homebrew/Cellar/openjdk/22.0.1/libexec/openjdk.jdk/Contents/Home
+					cd ${env.WORKSPACE}; 
+                                	curl -sSL  https://download.sourceclear.com/ci.sh | sh -s -- scan . --allow-dirty
+					"""
+                                 }
+				sh """cd ${WORKSPACE}/veracode; rm -r ${env.archive_name_debug} *.zip"""
+                    		sh """cd ${WORKSPACE}; rm -rf VeracodeDebugBuild"""
+                        }else if(selectedEnv == 'ADEPPrePROD' || selectedEnv == 'PrePROD'){
+                                echo 'Running Veracode Sandbox scan for PrePROD environment... Veracode Sandbox scan'
+                                withCredentials([usernamePassword(credentialsId: 'dsd_veracode_cicd', passwordVariable: 'VC_PASS', usernameVariable: 'VC_ADMIN')]) {
+                                    veracode applicationName: 'AHM_HondaLink-AcuraLink-IOS', criticality: 'VeryHigh', deleteIncompleteScanLevel: '0', 
+                                    fileNamePattern: '', pHost: 'na-proxy-srv.amerhonda.com', pPassword: '', pPort: '8080', pUser: '', 
+                                    replacementPattern: '', sandboxName: 'MOBILE_APP_IOS_SANDBOX', scanExcludesPattern: '', scanIncludesPattern: '', 
+                                    scanName: '${BUILD_TAG}', teams: '', uploadIncludesPattern:'veracode/*.zip', useProxy: true, vid: VC_ADMIN, vkey: VC_PASS
+                		}
+				sh """cd ${WORKSPACE}/veracode; rm -r ${env.archive_name_debug} *.zip"""
+                    		sh """cd ${WORKSPACE}; rm -rf VeracodeDebugBuild"""
+                        }else{
+				echo "Skipping the Veracode scan for ADEPPreStage, ADPPreStage and PROD environments"
+			}
+		   print "===========================iOS Veracode scan - Completed ============================================================================================================="
+           }   
+        }	
+stage('Generate IPA'){
+		script{
+			latestTag = "${env.LATEST_TAG}"
+			print "=========================== HondaLink - Generate IPA file and build signing - Started ======================================================================================"
+		    	env.appNameHonda = "HondaLink-${selectedEnv}-${env.marketingVersionNumber}-${env.currentProjectVersionNumber}-${latestTag}-Jenkins-Build-${BUILD_NUMBER}"
+                    	env.directoryPathIPAHonda = "IPA_Files/${env.folder_name_honda}"
+                    	sh "mkdir -p ${env.directoryPathIPAHonda}"
+                    	sh "chmod 775 ${env.directoryPathIPAHonda}"
+                    	if(selectedEnv == 'ADEPPrePROD' || selectedEnv == 'ADEPQA' || selectedEnv == 'ADEPUAT'|| selectedEnv == 'ADEPPreStage'){
+				sh """xcodebuild -exportArchive -archivePath ${env.WORKSPACE}/Archives/${env.folder_name_honda}/${env.archive_name_honda} \\
+    		                                -exportPath ./${env.directoryPathIPAHonda} \\
+    		                                -exportOptionsPlist /Users/awsermmb/ADEPProfiles/HondaLinkExportOptionsADEP.plist"""
+				env.appCenterAppNameHonda = "hna/HondaLink-Enterprise"
+				env.appCenterAppNameHondaEmail = "HondaLink-Enterprise"
+			}else if(selectedEnv == 'PrePROD' || selectedEnv == 'ADPQA' || selectedEnv == 'ADPUAT' || selectedEnv == 'ADPPreStage' || selectedEnv == 'PROD'){
+				sh """xcodebuild -exportArchive -archivePath ${env.WORKSPACE}/Archives/${env.folder_name_honda}/${env.archive_name_honda} \\
+                                                 -exportPath ./${env.directoryPathIPAHonda} \\
+                                                 -exportOptionsPlist /Users/awsermmb/ADPProfiles/HondaLinkExportOptionsADP.plist"""
+                        	env.appCenterAppNameHonda = "hna/HondaLink"
+				env.appCenterAppNameHondaEmail = "HondaLink"
+			}
+			sh "cp -r ${env.WORKSPACE}/${env.directoryPathIPAHonda}/HondaLink.ipa ${env.WORKSPACE}/${env.directoryPathIPAHonda}/${env.appNameHonda}.ipa"
+			
+			print "=========================== AcuraLink - Generate IPA file and build signing - Started ======================================================================================"
+    		        
+			env.appNameAcura = "AcuraLink-${selectedEnv}-${env.marketingVersionNumber}-${env.currentProjectVersionNumber}-${latestTag}-Jenkins-Build-${BUILD_NUMBER}"
+                    	env.directoryPathIPAAcura = "IPA_Files/${env.folder_name_acura}"
+                    	sh "mkdir -p ${env.directoryPathIPAAcura}"
+                    	sh "chmod 775 ${env.directoryPathIPAAcura}"
+						
+                    	if(selectedEnv == 'ADEPPrePROD' || selectedEnv == 'ADEPQA' || selectedEnv == 'ADEPUAT'|| selectedEnv == 'ADEPPreStage'){
+				sh """xcodebuild -exportArchive -archivePath ${env.WORKSPACE}/Archives/${env.folder_name_acura}/${env.archive_name_acura} \\
+    		                                            -exportPath ./${env.directoryPathIPAAcura} \\
+    		                                            -exportOptionsPlist /Users/awsermmb/ADEPProfiles/AcuraLinkExportOptionsADEP.plist"""
+                    		env.appCenterAppNameAcura = "hna/AcuraLink-iOS-Enterprise"
+				env.appCenterAppNameAcuraEmail = "AcuraLink-iOS-Enterprise"
+			}else if(selectedEnv == 'PrePROD' || selectedEnv == 'ADPQA' || selectedEnv == 'ADPUAT' || selectedEnv == 'ADPPreStage' || selectedEnv == 'PROD'){
+                            	sh """xcodebuild -exportArchive -archivePath ${env.WORKSPACE}/Archives/${env.folder_name_acura}/${env.archive_name_acura} \\
+                                                            -exportPath ./${env.directoryPathIPAAcura} \\
+                                                            -exportOptionsPlist /Users/awsermmb/ADPProfiles/AcuraLinkExportOptionsADP.plist"""
+                    	    	env.appCenterAppNameAcura = "hna/AcuraLink"
+				env.appCenterAppNameAcuraEmail = "AcuraLink"
+			}
+			sh "cp -r ${env.WORKSPACE}/${env.directoryPathIPAAcura}/AcuraLink.ipa ${env.WORKSPACE}/${env.directoryPathIPAAcura}/${env.appNameAcura}.ipa"
+                    	print "====================================AcuraLink - Generate IPA file and build signing - Completed ======================================================================================"
+		}
+	}
+stage("Upload IPA to Artifactory"){
+	script{
+		echo "Upload ipa file to JFrog Artifactory"
+    		print "=========================== Upload HondaLink & AcuraLink IPA File to JFrog Artifactory - Started ======================================================================================"
+    		retry(5){    
+			def server = Artifactory.server 'Artifactory_DSD'
+                        def uploadSpec = """{
+                             "files": [
+				{
+                                 "pattern": "${env.WORKSPACE}/${env.directoryPathIPAHonda}/${env.appNameHonda}.ipa",
+                                 "target": "ahm-ios-hondalink-generic/${selectedEnv}/"
+                                 },
+				 {
+                                    "pattern": "${env.WORKSPACE}/${env.directoryPathIPAAcura}/${env.appNameAcura}.ipa",
+                                    "target": "ahm-ios-acuralink-generic/${selectedEnv}/"
+                                    }
+				]
+                            }"""
+                    	    def buildInfo = server.upload spec: uploadSpec, failNoOp: true
+		}
+		print "=========================== Upload HondaLink & AcuraLink IPA File to JFrog Artifactory - Completed ======================================================================================"
+    	}
+}
+stage("Publish IPA to AppCenter"){
+	script{
+		sh "echo \$KEYCHAIN_PASSWORD | sudo -S security set-keychain-settings -lu -t 7200 /Library/Keychains/System.keychain"				
+		sh "echo \$KEYCHAIN_PASSWORD | sudo -S security unlock-keychain -p '${KEYCHAIN_PASSWORD}' /Library/Keychains/System.keychain"
+		if("${selectedEnv}".contains("ADEP")){
+			HONDA_DISTRIBUTION_GROUP = "${HONDALINK_ADEP_DISTRIBUTION_GROUP}"
+			ACURA_DISTRIBUTION_GROUP = "${ACURALINK_ADEP_DISTRIBUTION_GROUP}"
+		}else{
+			HONDA_DISTRIBUTION_GROUP = "${HONDALINK_ADP_DISTRIBUTION_GROUP}"
+			ACURA_DISTRIBUTION_GROUP = "${ACURALINK_ADP_DISTRIBUTION_GROUP}"
+		}
+		print "=========================== Publish HondaLink & AcuraLink IPA File to AppCenter - Started ======================================================================================"
+    		env.RELEASE_NOTES_HONDA = "HondaLink-${selectedEnv}-${latestTag}-Jenkins-Build-${BUILD_NUMBER}"
+		env.APP_PACKAGE_HONDALINK ="${env.WORKSPACE}/${env.directoryPathIPAHonda}/${env.appNameHonda}.ipa" 
+        	retry(5){
+                        sleep 10
+			sh """/opt/homebrew/bin/node /opt/homebrew/bin/appcenter distribute release --app ${env.appCenterAppNameHonda} \\
+                                                                                               	--file "${env.APP_PACKAGE_HONDALINK}" \\
+												--group "${HONDA_DISTRIBUTION_GROUP}" \\
+												--token "${APPCENTER_API_TOKEN}" \\
+                                                                                                --release-notes "${env.RELEASE_NOTES_HONDA}" \\
+												--silent """
+		}
+		print "=========================== Publish HondaLink IPA File to AppCenter - Completed ======================================================================================"
+    		        
+		print "=========================== Publish AcuraLink IPA File to AppCenter - Started ======================================================================================"
+    		env.RELEASE_NOTES_ACURA = "AcuraLink-${selectedEnv}-${latestTag}-Jenkins-Build-${BUILD_NUMBER}"
+		echo "Release Notes Acura : ${env.RELEASE_NOTES_ACURA}"
+		env.APP_PACKAGE_ACURALINK ="${env.WORKSPACE}/${env.directoryPathIPAAcura}/${env.appNameAcura}.ipa" 
+		retry(5){
+                        sleep 10
+			sh """/opt/homebrew/bin/node /opt/homebrew/bin/appcenter distribute release --app ${env.appCenterAppNameAcura} \\
+                                                                                                --file "${env.APP_PACKAGE_ACURALINK}" \\
+                                                                                                --group "${ACURA_DISTRIBUTION_GROUP}" \\
+												--token "${APPCENTER_API_TOKEN}" \\
+                                                                                                --release-notes "${env.RELEASE_NOTES_ACURA}" \\
+												--silent """ 
+		}
+		print "=========================== Publish HondaLink & AcuraLink IPA File to AppCenter - Completed ======================================================================================"
+    	}
+}
+
+
+stage("Parallel Build") { 
+parallel(
+      HondaLink: {
+        stage('Build HondaLink') {
+		script{
+			print "=========================== Parallel Build - HondaLink - Build apk - Started ============================================================================================================="
+                   	sh "gradle wrapper"
+			sh "./gradlew wrapper --gradle-version 7.5"
+			sh "./gradlew Hondaapp:assembleHONDALINK_${selectedEnv}Release --stacktrace -Dhttp.proxyHost=na-proxy-srv.amerhonda.com -Dhttps.proxyHost=na-proxy-srv.amerhonda.com -Dhttp.proxyPort=8080 -Dhttps.proxyPort=8080 --no-daemon"
+			print "=========================== Parallel Build - HondaLink - Build apk - Completed ===================================================================…
+ stage("Dependency Installation") {
+	script{
+		print "=========================== Cocoapods Dependency Installation - Started ==========================="
+		selectedEnv = "${env.SELECTED_ENV}"
+		latestTag = "${env.LATEST_TAG}"
+		retry(5){
+			sh '/usr/local/bin/pod cache clean --all'
+			sh '/usr/local/bin/pod deintegrate'
+			sh '/usr/local/bin/pod install'
+		}
+		currentDate = new Date().format('yyyy-MM-dd_HH-mm-ss')
+		sh "echo \$KEYCHAIN_PASSWORD | sudo -S security set-keychain-settings -lu -t 7200 /Library/Keychains/System.keychain"
+		sh "echo \$KEYCHAIN_PASSWORD | sudo -S security unlock-keychain -p '${KEYCHAIN_PASSWORD}' /Library/Keychains/System.keychain"
+		print "=========================== Cocoapods Dependency Installation - Completed ==========================="
+	}
+}
+
+
+stage("Parallel Build") { 
+parallel(
+      HondaLink: {
+        stage('Build HondaLink') {
+		script{
+			print "=========================== Parallel Build - HondaLink - Build apk - Started ============================================================================================================="
+                   	sh "gradle wrapper"
+			sh "./gradlew wrapper --gradle-version 7.5"
+			sh "./gradlew Hondaapp:assembleHONDALINK_${selectedEnv}Release --stacktrace -Dhttp.proxyHost=na-proxy-srv.amerhonda.com -Dhttps.proxyHost=na-proxy-srv.amerhonda.com -Dhttp.proxyPort=8080 -Dhttps.proxyPort=8080 --no-daemon"
+			print "=========================== Parallel Build - HondaLink - Build apk - Completed ============================================================================================================="
+                	}
+		}	
+      },
+      AcuraLink: {
+        stage('Build AcuraLink') {
+		script{
+			print "=========================== Parallel Build - AcuraLink - Build apk - Started ============================================================================================================="
+                    	sh "gradle wrapper"
+			sh "./gradlew wrapper --gradle-version 7.5"
+			sh "./gradlew Hondaapp:assembleACURALINK_${selectedEnv}Release --stacktrace -Dhttp.proxyHost=na-proxy-srv.amerhonda.com -Dhttps.proxyHost=na-proxy-srv.amerhonda.com -Dhttp.proxyPort=8080 -Dhttps.proxyPort=8080 --no-daemon"
+			print "=========================== Parallel Build - AcuraLink - Build apk - Completed ============================================================================================================="
+                	}
+		}
+	}
+)
+}
+	
+stage("SonarQube Analysis") {
+    	script {
+                print "=========================== SonarQube analysis - Started=================================="				
+                withSonarQubeEnv(credentialsId: 'sonarprod-token') {
+			sh """/opt/homebrew/Cellar/sonar-scanner/6.0.0.4432/bin/sonar-scanner \\
+					-Dsonar.host.url=${SONAR_SERVER} \\
+					-Dsonar.projectKey=${PROJECT_KEY} \\
+					-Dsonar.sources=Hondaapp/src \\
+					-Dsonar.java.binaries=Hondaapp/build/intermediates/javac/HONDALINK_${selectedEnv}Release/classes,Hondaapp/build/intermediates/javac/ACURALINK_${selectedEnv}Release/classes \\
+					-Dsonar.java.libraries=Hondaapp/libs \\
+					-Dsonar.sourceEncoding=UTF-8 \\
+					-Dsonar.exclusions=Jenkinsfile*/,Hondaapp/libs*/ \\
+					-Dsonar.verbose=true \\
+					-Dsonar.analysis.buildNumber=${BUILD_NUMBER} \\
+				        -Dsonar.webhooks.project=https://ahmpxljenkins01.aws.honda.com:8443/sonarqube-webhook/ """
+                        }
+                print "=========================== SonarQube analysis - Completed==========================================================================================================="
+	} 
+}
+ stage("Sonar Quality Gate"){
+	script{
+		echo " Sonar Quality Gate"
+		sleep 30
+		def reportFile = '.scannerwork/report-task.txt'
+
+	        // Run the shell command to extract the TaskId and store it in the processid variable
+		def taskId = sh(script: "grep TaskId ${reportFile}", returnStdout: true).trim()
+		def taskIdSplit = taskId.split('=')
+		def processID = taskIdSplit[1]
+		echo "Extracted TaskId: ${processID}"
+		env.PROCESS_ID = processID
+		sh '''
+		#!/bin/sh
+                  set -uxo pipefail
+		  echo "Process ID: ${PROCESS_ID}"
+		  processid=${PROCESS_ID}
+		  
+ 		  count=0
+ 		  maxLoops=100
+ 		  while [ ${count} -lt ${maxLoops} ] ; do
+                    
+                    curl -X GET -H "Accept: application/json" http://170.108.72.171:9000/api/ce/task?id=${processid} | python3 -m json.tool > process.json
+ 		    sonarstatus=$(cat process.json | /opt/homebrew/bin/jq .task.status -r)
+			echo "sonarstatus ** ID: ${sonarstatus}"
+ 		    if [ 'SUCCESS' == "${sonarstatus}" ] ; then
+ 			break
+                    fi
+                    count=$((count + 1))
+                    sleep 10
+                  done
+ 
+                  if [ ${count} -ge ${maxLoops} ] ; then
+                    echo "Did not get a SUCCESS from sonarqube for processid=${processid}"
+ 		  exit 1
+                  fi
+
+                  curl -f -u 2be4ae358cbab0728a1403746e6009f472e41697: -X GET -H "Accept:application/json" "http://170.108.72.171:9000/api/qualitygates/project_status?projectKey=AHM_DSD_MOBILE_APP_ANDROID&branch=${BRANCH_NAME}" | python3 -m json.tool > status.json
+ 
+                  projectStatus=$(cat status.json | /opt/homebrew/bin/jq .projectStatus.status -r)
+ 
+                  set -e
+ 
+                  if [ 'OK' != "${projectStatus}" ] ; then
+                    echo "Did not get an OK for projectStatus=${projectStatus}"
+                    exit 1
+                  fi
+                  EXIT_CODE="$?"
+ 		  if [ "$EXIT_CODE" != 0 ] ; then
+                    exit $EXIT_CODE
+                  fi
+		'''
+     	}
+ }
+stage("Veracode Scan"){
+	script{
+		print "=========================== Veracode scan - Started======================================================================================================================="
+		if(selectedEnv == "QA"){
+			echo 'Running Veracode SAST scan for QA...Veracode SAST scan'
+	                withCredentials([usernamePassword(credentialsId: 'dsd_veracode_cicd', passwordVariable: 'VC_PASS', usernameVariable: 'VC_ADMIN')]) {
+	                            veracode applicationName: 'AHM_HondaLink-AcuraLink-Android', criticality: 'Medium', debug: true, deleteIncompleteScanLevel: '0', fileNamePattern: '', replacementPattern: '', sandboxName: '', scanExcludesPattern: '', scanIncludesPattern: '', pHost: 'na-proxy-srv.amerhonda.com', pPassword: '', pPort: '8080', pUser: '', scanName: '${BUILD_TAG}', teams: '', uploadIncludesPattern: '*/Hondaapp/libs/.jar,/Hondaapp/libs/.aar,/*.apk', useProxy: true, vid: VC_ADMIN, vkey: VC_PASS
+                        }
+    	        }else if(selectedEnv == "UAT"){
+                         echo 'Running Veracode SCA Agent scan for UAT environment... Veracode SCA Agent scan'
+	                        withCredentials([string(credentialsId: 'SRCCLR_API_TOKEN', variable: 'SRCCLR_API_TOKEN')]) {
+	                            sh """
+	                            export http_proxy='http://na-proxy-srv.amerhonda.com:8080'
+	                            export https_proxy='http://na-proxy-srv.amerhonda.com:8080'
+	                            curl -sSL https://download.sourceclear.com/ci.sh | sh -s -- scan . --allow-dirty --scan-collectors "gradle" --skip-collectors "npm"
+	                            """
+                            } 
+                }else if(selectedEnv == "PRESTAGE"){
+                        echo 'Running Veracode Sandbox scan for any GitHub Branch... Veracode Sandbox scan'
+                        withCredentials([usernamePassword(credentialsId: 'dsd_veracode_cicd', passwordVariable: 'VC_PASS', usernameVariable: 'VC_ADMIN')]) {
+                            veracode applicationName: 'AHM_HondaLink-AcuraLink-Android', criticality: 'VeryHigh', deleteIncompleteScanLevel: '0', fileNamePattern: '', pHost: 'na-proxy-srv.amerhonda.com', pPassword: '', pPort: '8080', pUser: '', replacementPattern: '', sandboxName: 'MOBILE_APP_ANDROID_HLU_SANDBOX', scanExcludesPattern: '', scanIncludesPattern: '', scanName: '${BUILD_TAG}', teams: '', uploadIncludesPattern: '*/Hondaapp/libs/.jar,/Hondaapp/libs/.aar,/*.apk', useProxy: true, vid: VC_ADMIN, vkey: VC_PASS
+    			}
+                    }else{
+			echo "Skipping the Veracode scan for Production environment"
+		    }
+		print "=========================== Veracode scan - Completed========================================================================================="	
+    	    }
+    }
+stage("Upload APK to Artifactory") {
+        script{
+		print "=========================== Upload HondaLink & AcuraLink APK File to JFrog Artifactory - Started ======================================================================================"
+    		//def originalBranchName = "${BRANCH_NAME}"
+		//modifiedBranchName = originalBranchName.replaceAll('/', '-')
+		latestTag = "${env.LATEST_TAG}"
+		env.appNameHondaLink = "HONDALINK-${selectedEnv}-${versionNumber}-${latestTag}-Jenkins-Build-${BUILD_NUMBER}"
+		env.appNameAcuraLink = "ACURALINK-${selectedEnv}-${versionNumber}-${latestTag}-Jenkins-Build-${BUILD_NUMBER}"
+                sh "cp -r ${env.WORKSPACE}/Hondaapp/build/outputs/apk/HONDALINK_${selectedEnv}/release/Hondaapp-HONDALINK_${selectedEnv}-release.apk ${env.WORKSPACE}/Hondaapp/build/outputs/apk/HONDALINK_${selectedEnv}/release/${env.appNameHondaLink}.apk"
+        	sh "cp -r ${env.WORKSPACE}/Hondaapp/build/outputs/apk/ACURALINK_${selectedEnv}/release/Hondaapp-ACURALINK_${selectedEnv}-release.apk ${env.WORKSPACE}/Hondaapp/build/outputs/apk/ACURALINK_${selectedEnv}/release/${env.appNameAcuraLink}.apk"
+        	env.appPackageHondaLink = "${env.WORKSPACE}/Hondaapp/build/outputs/apk/HONDALINK_${selectedEnv}/release/${env.appNameHondaLink}.apk"
+		env.appPackageAcuraLink = "${env.WORKSPACE}/Hondaapp/build/outputs/apk/ACURALINK_${selectedEnv}/release/${env.appNameAcuraLink}.apk"
+
+		retry(5){
+        	        def server = Artifactory.server 'Artifactory_DSD'
+                        def uploadSpec = """{
+                                "files": [
+					{
+                                    "pattern": "${env.WORKSPACE}/Hondaapp/build/outputs/apk/HONDALINK_${selectedEnv}/release/${env.appNameHondaLink}.apk",
+                                    "target": "ahm-android-hondalink-generic/${selectedEnv}/HONDALINK_${selectedEnv}Release/"
+                                    	},
+					{
+                                    "pattern": "${env.WORKSPACE}/Hondaapp/build/outputs/apk/ACURALINK_${selectedEnv}/release/${env.appNameAcuraLink}.apk",
+                                    "target": "ahm-android-acuralink-generic/${selectedEnv}/ACURALINK_${selectedEnv}Release/"
+                                    	}
+				]
+                            }"""
+                        def buildInfo = server.upload spec: uploadSpec, failNoOp: true
+		}
+		print "=========================== Upload HondaLink & AcuraLink APK File to JFrog Artifactory - Completed ======================================================================================"
+    	}
+}      
+stage("Publish APK to App Center") {
+	script{
+		print "=========================== Publish HondaLink & AcuraLink APK File to AppCenter - Started ======================================================================================"
+    		//Set the Release notes for App Center
+                env.RELEASE_NOTES_HONDALINK = "HONDALINK-${selectedEnv}-${versionNumber}-${latestTag}-Jenkins-Build-${BUILD_NUMBER}"
+		env.RELEASE_NOTES_ACURALINK = "ACURALINK-${selectedEnv}-${versionNumber}-${latestTag}-Jenkins-Build-${BUILD_NUMBER}"
+		retry(5){
+                        sleep 10	
+			sh """appcenter distribute release  --app ${env.selectedAppNameHondaLink} \\
+								--file "${env.appPackageHondaLink}" \\
+								--group "${HONDALINK_ANDROID_DISTRIBUTION_GROUP}" \\
+								--token "${APPCENTER_API_TOKEN}" \\
+								--release-notes "${env.RELEASE_NOTES_HONDALINK}" \\
+								--silent """
+		}
+		retry(5){
+                        sleep 10
+			sh """appcenter distribute release  --app ${env.selectedAppNameAcuraLink} \\
+								--file "${env.appPackageAcuraLink}" \\
+								--group "${ACURALINK_ANDROID_DISTRIBUTION_GROUP}" \\
+								--token "${APPCENTER_API_TOKEN}" \\
+								--release-notes "${env.RELEASE_NOTES_ACURALINK}" \\
+								--silent """
+		}
+		print "=========================== Publish HondaLink & AcuraLink APK File to AppCenter - Completed ======================================================================================"
+    	}
+}
+
+
+stage("Parallel Build PROD") {
+parallel(
+HondaLinkPROD: {
+	script{
+		print "=========================== Parallel Build - HondaLink PROD - Build apk - Started ============================================================================================================="
+		sh "gradle wrapper"
+		sh "./gradlew wrapper --gradle-version 7.5"
+		sh "./gradlew Hondaapp:assembleHONDALINK_PRODRelease --stacktrace -Dhttp.proxyHost=na-proxy-srv.amerhonda.com -Dhttps.proxyHost=na-proxy-srv.amerhonda.com -Dhttp.proxyPort=8080 -Dhttps.proxyPort=8080 --no-daemon"
+		print "=========================== Parallel Build - HondaLink PROD- Build apk - Completed ============================================================================================================="
+		}	
+	},
+AcuraLinkPROD: {
+	script{
+		print "=========================== Parallel Build - AcuraLink PROD - Build apk - Started ============================================================================================================="
+		sh "gradle wrapper"
+		sh "./gradlew wrapper --gradle-version 7.5"
+		sh "./gradlew Hondaapp:assembleACURALINK_PRODRelease --stacktrace -Dhttp.proxyHost=na-proxy-srv.amerhonda.com -Dhttps.proxyHost=na-proxy-srv.amerhonda.com -Dhttp.proxyPort=8080 -Dhttps.proxyPort=8080 --no-daemon"
+					
+		print "=========================== Parallel Build - AcuraLink PROD - Build apk - Completed ============================================================================================================="
+                }
+	}
+)
+}
+stage('Upload PROD APK to Artifactory & AppCenter') {
+    script{
+	print "=========================== Upload HondaLink & AcuraLink APK File to JFrog Artifactory - Started ======================================================================================"
+    	//def originalBranchName = "${BRANCH_NAME}"
+	//modifiedBranchName = originalBranchName.replaceAll('/', '-')
+	latestTag = "${env.LATEST_TAG}"
+	env.appNameHondaLinkPROD = "HONDALINK-PROD-${versionNumber}-${latestTag}-Jenkins-Build-${BUILD_NUMBER}"
+        env.appNameAcuraLinkPROD = "ACURALINK-PROD-${versionNumber}-${latestTag}-Jenkins-Build-${BUILD_NUMBER}"
+	sh "cp -r ${env.WORKSPACE}/Hondaapp/build/outputs/apk/HONDALINK_PROD/release/Hondaapp-HONDALINK_PROD-release.apk ${env.WORKSPACE}/Hondaapp/build/outputs/apk/HONDALINK_PROD/release/${env.appNameHondaLinkPROD}.apk"
+        sh "cp -r ${env.WORKSPACE}/Hondaapp/build/outputs/apk/ACURALINK_PROD/release/Hondaapp-ACURALINK_PROD-release.apk ${env.WORKSPACE}/Hondaapp/build/outputs/apk/ACURALINK_PROD/release/${env.appNameAcuraLinkPROD}.apk"
+	env.appPackageHondaLinkPROD = "${env.WORKSPACE}/Hondaapp/build/outputs/apk/HONDALINK_PROD/release/${env.appNameHondaLinkPROD}.apk"
+	env.appPackageAcuraLinkPROD = "${env.WORKSPACE}/Hondaapp/build/outputs/apk/ACURALINK_PROD/release/${env.appNameAcuraLinkPROD}.apk"
+        retry(5){
+		def server1 = Artifactory.server 'Artifactory_DSD'
+                def uploadSpec1 = """{
+                                "files": [
+					{
+                                    "pattern": "${env.WORKSPACE}/Hondaapp/build/outputs/apk/HONDALINK_PROD/release/${env.appNameHondaLinkPROD}.apk",
+                                    "target": "ahm-android-hondalink-generic/PROD/HONDALINK_PRODRelease/"
+                                    	},
+					{
+                                    "pattern": "${env.WORKSPACE}/Hondaapp/build/outputs/apk/ACURALINK_PROD/release/${env.appNameAcuraLinkPROD}.apk",
+                                    "target": "ahm-android-acuralink-generic/PROD/ACURALINK_PRODRelease/"
+                                   	}
+					]
+                            	}"""
+        	def buildInfo1 = server1.upload spec: uploadSpec1, failNoOp: true
+	}
+	print "=========================== Publish HondaLink & AcuraLink PROD APK File to AppCenter - Started ======================================================================================"
+    	//Set the Release notes for App Center
+        env.RELEASE_NOTES_HONDALINK_PROD = "HONDALINK-PROD-${versionNumber}-${latestTag}-Jenkins-Build-${BUILD_NUMBER}"
+	env.RELEASE_NOTES_ACURALINK_PROD = "ACURALINK-PROD-${versionNumber}-${latestTag}-Jenkins-Build-${BUILD_NUMBER}"
+	retry(5){
+                sleep 10
+		sh """appcenter distribute release  --app ${env.selectedAppNameHondaLink} \\
+								--file "${env.appPackageHondaLinkPROD}" \\
+								--group "${HONDALINK_ANDROID_DISTRIBUTION_GROUP}" \\
+								--token "${APPCENTER_API_TOKEN}" \\
+								--release-notes "${env.RELEASE_NOTES_HONDALINK_PROD}" \\
+								--silent """
+	}
+	retry(5){
+                sleep 10
+		sh """appcenter distribute release  --app ${env.selectedAppNameAcuraLink} \\
+								--file "${env.appPackageAcuraLinkPROD}" \\
+								--group "${ACURALINK_ANDROID_DISTRIBUTION_GROUP}" \\
+								--token "${APPCENTER_API_TOKEN}" \\
+								--release-notes "${env.RELEASE_NOTES_ACURALINK_PROD}" \\
+								--silent """
+	}
+	print "=========================== Publish HondaLink & AcuraLink PROD APK File to AppCenter - Completed ======================================================================================"
+	}
+}
+
+
+
+[1:47 pm, 11/09/2024] Shefu: stage("Parallel Build PRESTAGE") {
+parallel(
+HondaLinkPRESTAGE: {
+	script{
+		print "=========================== Parallel Build - HondaLink PRESTAGE - Build apk - Started ============================================================================================================="
+	        sh "gradle wrapper"
+		sh "./gradlew wrapper --gradle-version 7.5"
+		sh "./gradlew Hondaapp:assembleHONDALINK_PRESTAGERelease --stacktrace -Dhttp.proxyHost=na-proxy-srv.amerhonda.com -Dhttps.proxyHost=na-proxy-srv.amerhonda.com -Dhttp.proxyPort=8080 -Dhttps.proxyPort=8080 --no-daemon"
+		print "=========================== Parallel Build - HondaLink PRESTAGE- Build apk - Completed ============================================================================================================="
+	}	
+},
+AcuraLinkPRESTAGE: {
+	script{
+		print "=========================== Parallel Build - AcuraLink PRESTAGE - Build apk - Started ============================================================================================================="
+		sh "gradle wrapper"
+		sh "./gradlew wrapper --gradle-version 7.5"
+		sh "./gradlew Hondaapp:assembleACURALINK_PRESTAGERelease --stacktrace -Dhttp.proxyHost=na-proxy-srv.amerhonda.com -Dhttps.proxyHost=na-proxy-srv.amerhonda.com -Dhttp.proxyPort=8080 -Dhttps.proxyPort=8080 --no-daemon"
+					
+		print "=========================== Parallel Build - AcuraLink PRESTAGE - Build apk - Completed ============================================================================================================="
+        	}
+	}
+)
+}
+stage('Upload PRESTAGE APK to Artifactory & AppCenter') {
+    script{
+	print "=========================== Upload HondaLink & AcuraLink APK File to JFrog Artifactory - Started ======================================================================================"
+    	env.appNameHondaLinkPRESTAGE = "HONDALINK-PRESTAGE-${versionNumber}-${latestTag}-Jenkins-Build-${BUILD_NUMBER}"
+        env.appNameAcuraLinkPRESTAGE = "ACURALINK-PRESTAGE-${versionNumber}-${latestTag}-Jenkins-Build-${BUILD_NUMBER}"
+	sh "cp -r ${env.WORKSPACE}/Hondaapp/build/outputs/apk/HONDALINK_PRESTAGE/release/Hondaapp-HONDALINK_PRESTAGE-release.apk ${env.WORKSPACE}/Hondaapp/build/outputs/apk/HONDALINK_PRESTAGE/release/${env.appNameHondaLinkPRESTAGE}.apk"
+        sh "cp -r ${env.WORKSPACE}/Hondaapp/build/outputs/apk/ACURALINK_PRESTAGE/release/Hondaapp-ACURALINK_PRESTAGE-release.apk ${env.WORKSPACE}/Hondaapp/build/outputs/apk/ACURALINK_PRESTAGE/release/${env.appNameAcuraLinkPRESTAGE}.apk"
+	env.appPackageHondaLinkPRESTAGE = "${env.WORKSPACE}/Hondaapp/build/outputs/apk/HONDALINK_PRESTAGE/release/${env.appNameHondaLinkPRESTAGE}.apk"
+	env.appPackageAcuraLinkPRESTAGE = "${env.WORKSPACE}/Hondaapp/build/outputs/apk/ACURALINK_PRESTAGE/release/${env.appNameAcuraLinkPRESTAGE}.apk"
+        retry(5){
+		def server4 = Artifactory.server 'Artifactory_DSD'
+                def uploadSpec4 = """{
+                	"files": [
+				{
+                                "pattern": "${env.WORKSPACE}/Hondaapp/build/outputs/apk/HONDALINK_PRESTAGE/release/${env.appNameHondaLinkPRESTAGE}.apk",
+                                "target": "ahm-android-hondalink-generic/PRESTAGE/HONDALINK_PRESTAGERelease/"
+                                },
+				{
+                                "pattern": "${env.WORKSPACE}/Hondaapp/build/outputs/apk/ACURALINK_PRESTAGE/release/${env.appNameAcuraLinkPRESTAGE}.apk",
+                                "target": "ahm-android-acuralink-generic/PRESTAGE/ACURALINK_PRESTAGERelease/"
+                                }
+				]
+                            }"""
+                def buildInfo4 = server4.upload spec: uploadSpec4, failNoOp: true
+	}
+	print "=========================== Publish HondaLink & AcuraLink PRESTAGE APK File to AppCenter - Started ======================================================================================"
+    	//Set the Release notes for App Center
+        env.RELEASE_NOTES_HONDALINK_PRESTAGE = "HONDALINK-PRESTAGE-${versionNumber}-${latestTag}-Jenkins-Build-${BUILD_NUMBER}"
+	env.RELEASE_NOTES_ACURALINK_PRESTAGE = "ACURALINK-PRESTAGE-${versionNumber}-${latestTag}-Jenkins-Build-${BUILD_NUMBER}"
+	retry(5){
+                sleep 10		
+		sh """appcenter distribute release  --app ${env.selectedAppNameHondaLink} \\
+								--file "${env.appPackageHondaLinkPRESTAGE}" \\
+								--group "${HONDALINK_ANDROID_DISTRIBUTION_GROUP}" \\
+								--token "${APPCENTER_API_TOKEN}" \\
+								--release-notes "${env.RELEASE_NOTES_HONDALINK_PRESTAGE}" \\
+								--silent """
+	}
+	retry(5){
+                sleep 10
+		sh """appcenter distribute release  --app ${env.selectedAppNameAcuraLink} \\
+								--file "${env.appPackageAcuraLinkPRESTAGE}" \\
+								--group "${ACURALINK_ANDROID_DISTRIBUTION_GROUP}" \\
+								--token "${APPCENTER_API_TOKEN}" \\
+								--release-notes "${env.RELEASE_NOTES_ACURALINK_PRESTAGE}" \\
+								--silent """
+	}
+	print "=========================== Publish HondaLink & AcuraLink PRESTAGE APK File to AppCenter - Completed ======================================================================================"
+	}
+}
+[1:47 pm, 11/09/2024] Shefu: stage("Parallel Build PROD") {
+parallel(
+HondaLinkPROD: {
+	script{
+		print "=========================== Parallel Build - HondaLink PROD - Build apk - Started ============================================================================================================="
+		sh "gradle wrapper"
+		sh "./gradlew wrapper --gradle-version 7.5"
+		sh "./gradlew Hondaapp:assembleHONDALINK_PRODRelease --stacktrace -Dhttp.proxyHost=na-proxy-srv.amerhonda.com -Dhttps.proxyHost=na-proxy-srv.amerhonda.com -Dhttp.proxyPort=8080 -Dhttps.proxyPort=8080 --no-daemon"
+		print "=========================== Parallel Build - HondaLink PROD- Build apk - Completed ============================================================================================================="
+		}	
+	},
+AcuraLinkPROD: {
+	script{
+		print "=========================== Parallel Build - AcuraLink PROD - Build apk - Started ============================================================================================================="
+		sh "gradle wrapper"
+		sh "./gradlew wrapper --gradle-version 7.5"
+		sh "./gradlew Hondaapp:assembleACURALINK_PRODRelease --stacktrace -Dhttp.proxyHost=na-proxy-srv.amerhonda.com -Dhttps.proxyHost=na-proxy-srv.amerhonda.com -Dhttp.proxyPort=8080 -Dhttps.proxyPort=8080 --no-daemon"
+					
+		print "=========================== Parallel Build - AcuraLink PROD - Build apk - Completed ============================================================================================================="
+                }
+	}
+)
+}
+stage('Upload PROD APK to Artifactory & AppCenter') {
+    script{
+	print "=========================== Upload HondaLink & AcuraLink APK File to JFrog Artifactory - Started ======================================================================================"
+    	//def originalBranchName = "${BRANCH_NAME}"
+	//modifiedBranchName = originalBranchName.replaceAll('/', '-')
+	latestTag = "${env.LATEST_TAG}"
+	env.appNameHondaLinkPROD = "HONDALINK-PROD-${versionNumber}-${latestTag}-Jenkins-Build-${BUILD_NUMBER}"
+        env.appNameAcuraLinkPROD = "ACURALINK-PROD-${versionNumber}-${latestTag}-Jenkins-Build-${BUILD_NUMBER}"
+	sh "cp -r ${env.WORKSPACE}/Hondaapp/build/outputs/apk/HONDALINK_PROD/release/Hondaapp-HONDALINK_PROD-release.apk ${env.WORKSPACE}/Hondaapp/build/outputs/apk/HONDALINK_PROD/release/${env.appNameHondaLinkPROD}.apk"
+        sh "cp -r ${env.WORKSPACE}/Hondaapp/build/outputs/apk/ACURALINK_PROD/release/Hondaapp-ACURALINK_PROD-release.apk ${env.WORKSPACE}/Hondaapp/build/outputs/apk/ACURALINK_PROD/release/${env.appNameAcuraLinkPROD}.apk"
+	env.appPackageHondaLinkPROD = "${env.WORKSPACE}/Hondaapp/build/outputs/apk/HONDALINK_PROD/release/${env.appNameHondaLinkPROD}.apk"
+	env.appPackageAcuraLinkPROD = "${env.WORKSPACE}/Hondaapp/build/outputs/apk/ACURALINK_PROD/release/${env.appNameAcuraLinkPROD}.apk"
+        retry(5){
+		def server1 = Artifactory.server 'Artifactory_DSD'
+                def uploadSpec1 = """{
+                                "files": [
+					{
+                                    "pattern": "${env.WORKSPACE}/Hondaapp/build/outputs/apk/HONDALINK_PROD/release/${env.appNameHondaLinkPROD}.apk",
+                                    "target": "ahm-android-hondalink-generic/PROD/HONDALINK_PRODRelease/"
+                                    	},
+					{
+                                    "pattern": "${env.WORKSPACE}/Hondaapp/build/outputs/apk/ACURALINK_PROD/release/${env.appNameAcuraLinkPROD}.apk",
+                                    "target": "ahm-android-acuralink-generic/PROD/ACURALINK_PRODRelease/"
+                                   	}
+					]
+                            	}"""
+        	def buildInfo1 = server1.upload spec: uploadSpec1, failNoOp: true
+	}
+	print "=========================== Publish HondaLink & AcuraLink PROD APK File to AppCenter - Started ======================================================================================"
+    	//Set the Release notes for App Center
+        env.RELEASE_NOTES_HONDALINK_PROD = "HONDALINK-PROD-${versionNumber}-${latestTag}-Jenkins-Build-${BUILD_NUMBER}"
+	env.RELEASE_NOTES_ACURALINK_PROD = "ACURALINK-PROD-${versionNumber}-${latestTag}-Jenkins-Build-${BUILD_NUMBER}"
+	retry(5){
+                sleep 10
+		sh """appcenter distribute release  --app ${env.selectedAppNameHondaLink} \\
+								--file "${env.appPackageHondaLinkPROD}" \\
+								--group "${HONDALINK_ANDROID_DISTRIBUTION_GROUP}" \\
+								--token "${APPCENTER_API_TOKEN}" \\
+								--release-notes "${env.RELEASE_NOTES_HONDALINK_PROD}" \\
+								--silent """
+	}
+	retry(5){
+                sleep 10
+		sh """appcenter distribute release  --app ${env.selectedAppNameAcuraLink} \\
+								--file "${env.appPackageAcuraLinkPROD}" \\
+								--group "${ACURALINK_ANDROID_DISTRIBUTION_GROUP}" \\
+								--token "${APPCENTER_API_TOKEN}" \\
+								--release-notes "${env.RELEASE_NOTES_ACURALINK_PROD}" \\
+								--silent """
+	}
+	print "=========================== Publish HondaLink & AcuraLink PROD APK File to AppCenter - Completed ======================================================================================"
+	}
+}
+
+===========================================================================================================================
+
+#THIS IS NEW SCRIPT AND NEW CODE STARTS FROM HERE HASSAN SARDAR ----
+#!groovy
+import hudson.model.*
+//Jenkins pipeline for AHM Mobile Application iOS
+//Created: 01/20/2024
+//Author: AHM Release Management Team
+	 
+//Email config. Variable set up in global jenkins
+def email_from="AHM_Release_Management@ahm.honda.com"
+def email_to="kasiviswanadham_manchem@na.honda.com,nikhil_sureshgore@na.honda.com,nidhi_lalani@na.honda.com,soma_anbazhagan@na.honda.com,shubham_nagar@na.honda.com,meet_shah@na.honda.com,satyam_26@na.honda.com,swarnangshu_kundu@na.honda.com,ketan_tarange@na.honda.com,sujay_huilgol@na.honda.com,partha_samanta@na.honda.com,banu_basavalingaiah@na.honda.com,jhansi_koppolu@na.honda.com,satham_hussain@na.honda.com,mohammad_sardar@na.honda.com"
+def email_subject="${JOB_NAME}-${BUILD_NUMBER}"
+
+pipeline{
+	agent{
+		label "${env.SELECTED_NODE}"
+	}
+	environment{ 
+	    	LC_ALL = 'en_US.UTF-8'
+        	LANG = 'en_US.UTF-8'
+        	KEYCHAIN_PASSWORD = credentials('Keychain_Password_dsd')
+		NODE_EXTRA_CA_CERTS='/etc/ssl/cert.pem'
+		ADRUM_TREAT_UPLOAD_FAILURES_AS_ERRORS=0
+		APPCENTER_API_TOKEN = credentials('APPCENTER_API_TOKEN')
+		appCenterAppNameHondaADEP = "hna/HondaLink-Enterprise"
+		appCenterAppNameHondaEmailADEP = "HondaLink-Enterprise"
+		appCenterAppNameHondaADP = "hna/HondaLink"
+		appCenterAppNameHondaEmailADP = "HondaLink"
+		appCenterAppNameAcuraADEP = "hna/AcuraLink-iOS-Enterprise"
+		appCenterAppNameAcuraEmailADEP = "AcuraLink-iOS-Enterprise"
+		appCenterAppNameAcuraADP = "hna/AcuraLink"
+		appCenterAppNameAcuraEmailADP = "AcuraLink"
+		HONDALINK_ADEP_DISTRIBUTION_GROUP = "RM Test Group"
+		HONDALINK_ADP_DISTRIBUTION_GROUP = "RM Test Group"
+		ACURALINK_ADEP_DISTRIBUTION_GROUP = "RM Test Group"
+		ACURALINK_ADP_DISTRIBUTION_GROUP = "RM Test Group"
+	}
+	stages{
+	   stage("Checkout tag") {
+		steps{
+		    script{
+			branchName = env.BRANCH_NAME
+			echo "Branch name in Jenkinsfile: ${branchName}"
+			print "=========================== Get Latest tag from Github - Started ==========================="
+			latestTag = "${env.TAG_NAME}"		
+			//echo "Latest tag from branch env.TAG_NAME: ${env.TAG_NAME}"
+
+			//Fetch the latest tag from the branch
+			//sh "git fetch --all --tags"
+			//latestTag = sh(script: 'git describe --tags --abbrev=0', returnStdout: true).trim()
+			sh "git show ${latestTag}"
+			if (latestTag) {
+				echo "Latest tag from branch: $latestTag"
+				env.LATEST_TAG = latestTag
+				sh "git checkout ${latestTag}"
+			}else {
+				echo "No tags found in the repository"
+				error("**********No tags found in the repository!!****************")
+			}
+			sh "cp -r /Users/awsermmb/jenkinsfile/* ${env.WORKSPACE}"
+
+			print "================= Fetch Marketing Version and Current Project Version - Started ======================================"
+			def projectPath = "${env.WORKSPACE}/HondaNAiOSApp.xcodeproj/project.pbxproj"
+	        	env.marketingVersionNumber = sh(
+	                        script: "grep -E 'PROJECT_MARKETING_VERSION = ' ${projectPath} | head -n 1 | awk -F '= ' '{print \$2}' | sed 's/;//' | tr -d '\"'",
+	                        returnStdout: true
+	                    ).trim()
+	        	echo "Marketing Version Number: ${env.marketingVersionNumber}"
+	        	env.currentProjectVersionNumber = sh(
+	                        script: "grep -E 'PROJECT_VERSION = ' ${projectPath} | head -n 1 | awk -F '= ' '{print \$2}' | sed 's/;//' | tr -d '\"'",
+	                        returnStdout: true
+	                    ).trim()
+	        	echo "Current Version number: ${env.currentProjectVersionNumber}"
+			//def originalBranchName = "${BRANCH_NAME}"
+			//modifiedBranchName = originalBranchName.replaceAll('/', '-')
+			print "=========================== Fetch Marketing Version and Current Project Version - Completed =============================================================================================================================="
+		
+			def gitSplit = latestTag.split('-')
+			def selectedEnvCheck = gitSplit[0]
+			if(latestTag.toUpperCase().contains("RELEASE") || latestTag.toUpperCase().contains("HOTFIX")){
+				selectedEnv = "PROD, PROD xcarchive, PrePROD, ADEPPrePROD, ADEPUAT, ADPUAT, ADEPPreStage, ADPPreStage, ADEPQA, ADPQA"
+				//Add the distribution groups as follows for App Center
+				HONDALINK_ADEP_DISTRIBUTION_GROUP = "Collaborators,AHM Business Team,All-users-of-HondaLink-Enterprise,Drive Mode,AMS Team"
+				HONDALINK_ADP_DISTRIBUTION_GROUP = "Collaborators,All-users-of-HondaLink"
+				ACURALINK_ADEP_DISTRIBUTION_GROUP = "Collaborators,All-users-of-AcuraLink-iOS-Enterprise,AHM Honda Business,DriveMode,AMS Team"
+				ACURALINK_ADP_DISTRIBUTION_GROUP = "Collaborators,All-users-of-AcuraLink"
+				env.SELECTED_ENV = selectedEnv
+				echo "Selected Environment = ${selectedEnv}"
+				// Load another Groovy script file for building ipa for all the environments
+				load("ios-cocoapods.groovy")
+				load("ios-build-PROD.groovy")
+				load("ios-build-PREPROD.groovy")
+				load("ios-build-UAT.groovy")
+				load("ios-build-PRESTAGE.groovy")
+				load("ios-build-QA.groovy")
+			}else if(latestTag.toUpperCase().contains("TEST")){
+				selectedEnv = "PROD, PrePROD, ADEPPrePROD, ADEPUAT, ADPUAT, ADEPPreStage, ADPPreStage, ADEPQA, ADPQA"
+				//Add the distribution groups as follows for App Center
+				HONDALINK_ADEP_DISTRIBUTION_GROUP = "Collaborators,AHM Business Team,All-users-of-HondaLink-Enterprise,Drive Mode,AMS Team"
+				HONDALINK_ADP_DISTRIBUTION_GROUP = "Collaborators,All-users-of-HondaLink"
+				ACURALINK_ADEP_DISTRIBUTION_GROUP = "Collaborators,All-users-of-AcuraLink-iOS-Enterprise,AHM Honda Business,DriveMode,AMS Team"
+				ACURALINK_ADP_DISTRIBUTION_GROUP = "Collaborators,All-users-of-AcuraLink"
+				env.SELECTED_ENV = selectedEnv
+				echo "Selected Environment = ${selectedEnv}"
+				load("ios-cocoapods.groovy")
+				load("ios-build-PROD.groovy")
+				load("ios-build-PREPROD.groovy")
+				load("ios-build-UAT.groovy")
+				load("ios-build-PRESTAGE.groovy")
+				load("ios-build-QA.groovy")
+			}else{
+				selectedEnv = gitSplit[1].toUpperCase()	
+				if(selectedEnv == 'ADEPPRESTAGE'){
+					selectedEnv = 'ADEPPreStage'
+				}else if(selectedEnv == 'ADPPRESTAGE'){
+					selectedEnv = 'ADPPreStage'
+				}else if(selectedEnv == 'ADEPPREPROD'){
+					selectedEnv = 'ADEPPrePROD'
+				}else if(selectedEnv == 'PREPROD'){
+					selectedEnv = 'PrePROD'
+				}else if(selectedEnv == 'ADPPREPROD'){
+					selectedEnv = 'PrePROD'
+				}else if(selectedEnv == 'DEBUG'){
+					selectedEnv = 'Debug'
+				}
+				//Add the distribution groups as follows for App Center
+				HONDALINK_ADEP_DISTRIBUTION_GROUP = "Collaborators,AHM Business Team,All-users-of-HondaLink-Enterprise,Drive Mode,AMS Team"
+				HONDALINK_ADP_DISTRIBUTION_GROUP = "Collaborators,All-users-of-HondaLink"
+				ACURALINK_ADEP_DISTRIBUTION_GROUP = "Collaborators,All-users-of-AcuraLink-iOS-Enterprise,AHM Honda Business,DriveMode,AMS Team"
+				ACURALINK_ADP_DISTRIBUTION_GROUP = "Collaborators,All-users-of-AcuraLink"
+				
+				env.SELECTED_ENV = selectedEnv
+				echo "Selected Environment = ${selectedEnv}"
+				// Load another Groovy script file for building apk based on environment name given in tag
+                		load("ios-singleenv-build-script.groovy")
+			print "=========================== Get Latest tag from Github - Completed ==========================="
+			}
+	     }
+      }
+}
+}
+post {
+        success {
+            emailext attachLog: false, 
+            body: """${JOB_NAME} - Build ${BUILD_NUMBER} - <b>${selectedEnv}</b> Successful<br><br>
+                    Jenkins Job Information:<br>
+                    Link to the job:</b> ${JOB_URL}<br>
+                    Check build console output at: ${BUILD_URL}console<br>
+                    Changelog: ${JOB_URL}${BUILD_NUMBER}/changes<br><br>
+                    GitHub Repo: https://github.com/ahmprod-DSD/ahm_dsd_nim_foundation_ios.git<br>
+                    Branch name: ${BRANCH_NAME}<br>
+ 		    Tag name: ${latestTag}<br><br>
+		    <b>SonarQube Report:</b> https://sonarqube.amerhonda.com/dashboard?branch=${BRANCH_NAME}&id=AHM_DSD_MOBILE_APP_IOS<br><br>
+                    <b>JFrog Artifactory HondaLink:</b> https://artifactory.amerhonda.com:443/artifactory/ahm-ios-hondalink-generic/ <br><br>
+		    <b>JFrog Artifactory AcuraLink:</b> https://artifactory.amerhonda.com:443/artifactory/ahm-ios-acuralink-generic/ <br><br>
+                    <b>AppCenter HondaLink ADEP:</b> https://appcenter.ms/orgs/hna/apps/${appCenterAppNameHondaEmailADEP}/distribute/releases?top=false <br><br>
+		    <b>AppCenter AcuraLink ADEP:</b> https://appcenter.ms/orgs/hna/apps/${appCenterAppNameAcuraEmailADEP}/distribute/releases?top=false <br><br> 
+           	    <b>AppCenter HondaLink ADP:</b> https://appcenter.ms/orgs/hna/apps/${appCenterAppNameHondaEmailADP}/distribute/releases?top=false <br><br>
+		    <b>AppCenter AcuraLink ADP:</b> https://appcenter.ms/orgs/hna/apps/${appCenterAppNameAcuraEmailADP}/distribute/releases?top=false <br><br>""", 
+	    mimeType: 'text/html', 
+            replyTo: 'noreply@hna.honda.com', 
+            subject: "'Jenkins Job Successful - ${email_subject}'", 
+            from: "${email_from}", 
+            to: "${email_to}"
+            }
+        failure {
+            emailext attachLog: true, 
+            body: """${JOB_NAME} - Build ${BUILD_NUMBER} - <b>${selectedEnv}</b> Failed<br><br>
+                    Jenkins Job Information: <br>
+                    Link to the job: ${JOB_URL}<br>
+                    Check build console output at: ${BUILD_URL}console<br>
+                    Changelog: ${JOB_URL}${BUILD_NUMBER}/changes<br><br>
+                    GitHub Repo: https://github.com/ahmprod-DSD/ahm_dsd_nim_foundation_ios.git<br>
+                    Branch name: ${BRANCH_NAME}<br>
+		    Tag name: ${latestTag}<br><br>""", 
+            mimeType: 'text/html', 
+            replyTo: 'noreply@hna.honda.com', 
+            subject: "'Jenkins Job Failed - ${email_subject}'", 
+            from: "${email_from}", 
+            to: "${email_to}"
+            }
+	always {
+ 		cleanWs()
+		echo "Job completed!"
+	}
+    }
+}
+
+
+
+========================================================================================================================
+
+#!groovy
+import hudson.model.*
+//Jenkins pipeline for AHM Mobile Application Android
+//Created: 01/20/2024
+//Author: AHM Release Management Team
+	 
+//Email config. Variable set up in global jenkins
+def email_from="AHM_Release_Management@ahm.honda.com"
+def email_to="kasiviswanadham_manchem@na.honda.com,nikhil_sureshgore@na.honda.com,nidhi_lalani@na.honda.com,soma_anbazhagan@na.honda.com,manzar_siddique@na.honda.com,ramandeep_sodhi@na.honda.com,rishi_dwivedi@na.honda.com,rohit_targe@na.honda.com,sherdiwala_pratik@na.honda.com,kishore_v@na.honda.com,kartik_prajapati@na.honda.com,saurabh_singh2@na.honda.com,banu_basavalingaiah@na.honda.com,jhansi_koppolu@na.honda.com,satham_hussain@na.honda.com,mohammad_sardar@na.honda.com"
+def email_subject="${JOB_NAME}-${BUILD_NUMBER}"
+
+pipeline{
+	agent{
+		label "${env.SELECTED_NODE}"
+		//label "macOS-prod-vm2"
+	}
+	environment{ 
+	    NODE_EXTRA_CA_CERTS='/etc/ssl/cert.pem'
+	    JAVA_HOME='/opt/homebrew/Cellar/openjdk@11/11.0.23/libexec/openjdk.jdk/Contents/Home'
+	    GRADLE_USER_HOME='/Users/awsermmb/softwares/gradle-7.5/bin'
+	    ANDROID_HOME='/Users/awsermmb/Library/Android/sdk'
+	    PATH='/opt/homebrew/opt/openjdk@11/bin:/Users/awsermmb/softwares/gradle-7.5/bin:/Users/awsermmb/Library/Android/sdk/build-tools/34.0.0:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/Library/Apple/usr/bin'
+	    PROJECT_KEY = "AHM_DSD_MOBILE_APP_ANDROID"
+    	    SONAR_SERVER = "https://sonarqube.amerhonda.com"
+	    APPCENTER_API_TOKEN = credentials('APPCENTER_API_TOKEN')
+	    selectedAppNameHondaLink = 'hna/HondaLink-1'
+	    selectedAppNameHondaLinkEmail = 'HondaLink-1'
+            selectedAppNameAcuraLink = 'hna/AcuraLink-1'
+	    selectedAppNameAcuraLinkEmail = 'AcuraLink-1'
+            HONDALINK_ANDROID_DISTRIBUTION_GROUP = 'RM Test Group'
+	    ACURALINK_ANDROID_DISTRIBUTION_GROUP = 'RM Test Group'
+	}
+	stages{
+	   stage("Checkout tag") {
+		steps{
+		    script{
+			branchName = env.BRANCH_NAME
+			echo "Branch name in Jenkinsfile: ${branchName}"
+			print "=========================== Get Latest tag from Github - Started ==========================="
+			//sh "git fetch --all --tags"			
+			latestTag = "${env.TAG_NAME}"		
+			//echo "Latest tag from branch env.TAG_NAME: ${env.TAG_NAME}"
+			
+			//latestTag = sh(script: 'git describe --tags --abbrev=0', returnStdout: true).trim()
+			sh "git show ${latestTag}"
+			if (latestTag) {
+				echo "Latest tag from branch: $latestTag"
+				env.LATEST_TAG = latestTag
+				sh "git checkout ${latestTag}"
+			}else {
+				echo "No tags found in the repository"
+				error("**********No tags found in the repository!!****************")
+			}
+			sh "cp -r /Users/awsermmb/jenkinsfile/* ${env.WORKSPACE}"
+ 			
+			sh "sed -i '' 's#distributionUrl=.*#distributionUrl=file:/Users/awsermmb/softwares/gradle-7.5-bin.zip#' gradle/wrapper/gradle-wrapper.properties"
+			sh "cp /Users/awsermmb/softwares/dsd-local-file/local.properties ${WORKSPACE}"
+			
+			print "=========================== Fetch Major Minor Patch Version number- Started =============================================================================================================================="
+			def currentDate = new Date().format('yyyy-MM-dd_HH-mm-ss')
+         		//Fetch the apk version number from build.gradle file
+        		def buildGradlePath = "${env.WORKSPACE}/Hondaapp/build.gradle"
+       		 	def buildGradleContent = readFile(buildGradlePath)
+        		def findVersion = { content, variableName ->
+        			def match = content =~ /${variableName}\s*=\s*(\d+)/
+				return match ? match[0][1] : '0'
+                	}
+        		def versionMajor = findVersion(buildGradleContent, 'versionMajorName')
+        		def versionMinor = findVersion(buildGradleContent, 'versionMinorName')
+        		def versionPatch = findVersion(buildGradleContent, 'versionPatchName')
+        		versionNumber = "${versionMajor}.${versionMinor}.${versionPatch}"
+        		echo "Version Number: ${versionNumber}"
+			print "=========================== Fetch Major Minor Patch Version number - Completed =============================================================================================================================="
+
+			def gitSplit = latestTag.split('-')
+			def selectedEnvCheck = gitSplit[0]
+			if(latestTag.toUpperCase().contains("RELEASE") || latestTag.toUpperCase().contains("HOTFIX")){
+				selectedEnv = "PROD, PRODReleaseUnsigned, UAT, PRESTAGE, QA"
+				HONDALINK_ANDROID_DISTRIBUTION_GROUP = "Collaborators,All-users-of-HondaLink,AHM Business Team,Drive Mode,AMS Team"
+				ACURALINK_ANDROID_DISTRIBUTION_GROUP = "Collaborators,AHM Business Team,All-users-of-AcuraLink,DriveMode,AMS Team"
+				env.SELECTED_ENV = selectedEnv
+				// Load another Groovy script file for building apk for all the environments
+				echo "Selected Env = ${selectedEnv}"
+				load("android-build-PROD.groovy")
+				load("android-build-PRODReleaseUnsigned.groovy")
+				load("android-build-UAT.groovy")
+				load("android-build-PRESTAGE.groovy")
+				load("android-build-QA.groovy")
+			}else if(latestTag.toUpperCase().contains("TEST")){
+				selectedEnv = "PROD, PRODReleaseUnsigned, PRESTAGE, UAT, QA"
+				HONDALINK_ANDROID_DISTRIBUTION_GROUP = "Collaborators,All-users-of-HondaLink,AHM Business Team,Drive Mode,AMS Team"
+				ACURALINK_ANDROID_DISTRIBUTION_GROUP = "Collaborators,AHM Business Team,All-users-of-AcuraLink,DriveMode,AMS Team"
+				env.SELECTED_ENV = selectedEnv
+				echo "Selected Env = ${selectedEnv}"
+				load("android-build-PROD.groovy")
+				load("android-build-PRODReleaseUnsigned.groovy")
+				load("android-build-UAT.groovy")
+				load("android-build-PRESTAGE.groovy")
+				load("android-build-QA.groovy")
+			}else{
+				selectedEnv = gitSplit[1].toUpperCase()	
+				HONDALINK_ANDROID_DISTRIBUTION_GROUP = "Collaborators,All-users-of-HondaLink,AHM Business Team,Drive Mode,AMS Team"
+				ACURALINK_ANDROID_DISTRIBUTION_GROUP = "Collaborators,AHM Business Team,All-users-of-AcuraLink,DriveMode,AMS Team"
+				// Load another Groovy script file for building apk based on environment name given in tag
+				env.SELECTED_ENV = selectedEnv
+				echo "Selected Env = ${selectedEnv}"
+                		load("android-singleenv-build-script.groovy")
+			print "=========================== Get Latest tag from Github - Completed ==========================="
+			}
+	     }
+      }
+}
+}
+post {
+        success {
+            emailext attachLog: false, 
+            body: """${JOB_NAME} - Build ${BUILD_NUMBER} - <b>${selectedEnv}</b> Successful<br><br>
+                    Jenkins Job Information:<br>
+                    Link to the job:</b> ${JOB_URL}<br>
+                    Check build console output at: ${BUILD_URL}console<br>
+                    Changelog: ${JOB_URL}${BUILD_NUMBER}/changes<br><br>
+                    GitHub Repo: https://github.com/ahmprod-DSD/ahm_dsd_nam_foundation_android.git<br>
+                    Branch name: ${BRANCH_NAME}<br>
+		    Tag name: ${latestTag}<br><br>
+                    <b>SonarQube Report:</b> https://sonarqube.amerhonda.com/dashboard?branch=${BRANCH_NAME}&id=AHM_DSD_MOBILE_APP_ANDROID<br><br>
+                    <b>JFrog Artifactory HondaLink:</b> https://artifactory.amerhonda.com/artifactory/ahm-android-hondalink-generic/<br><br>
+		    <b>JFrog Artifactory AcuraLink:</b> https://artifactory.amerhonda.com/artifactory/ahm-android-acuralink-generic/<br><br>
+                    <b>AppCenter HondaLink:</b> https://appcenter.ms/orgs/hna/apps/${selectedAppNameHondaLinkEmail}/distribute/releases?top=false <br><br>
+		    <b>AppCenter AcuraLink:</b> https://appcenter.ms/orgs/hna/apps/${selectedAppNameAcuraLinkEmail}/distribute/releases?top=false <br><br>""", 
+            mimeType: 'text/html', 
+            replyTo: 'noreply@hna.honda.com', 
+            subject: "'Jenkins Job Successful - ${email_subject}'", 
+            from: "${email_from}", 
+            to: "${email_to}"
+            }
+        failure{
+            emailext attachLog: true, 
+            body: """${JOB_NAME} - Build ${BUILD_NUMBER} - <b>${selectedEnv}</b> Failed<br><br>
+                    Jenkins Job Information:<br>
+                    Link to the job: ${JOB_URL}<br>
+                    Check build console output at: ${BUILD_URL}console<br>
+                    Changelog: ${JOB_URL}${BUILD_NUMBER}/changes<br><br>
+                    GitHub Repo: https://github.com/ahmprod-DSD/ahm_dsd_nam_foundation_android.git<br>
+                    Branch name: ${BRANCH_NAME}<br>
+		    Tag name: ${latestTag}<br><br>""", 
+            mimeType: 'text/html', 
+            replyTo: 'noreply@hna.honda.com', 
+            subject: "'Jenkins Job Failed - ${email_subject}'", 
+            from: "${email_from}", 
+            to: "${email_to}"
+            }
+	    always {
+		cleanWs()
+		echo "Job completed!"
+	    }
+    	}
+}
