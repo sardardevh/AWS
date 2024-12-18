@@ -1,0 +1,107 @@
+End-to-End CI/CD Process Using AWS Services
+This example demonstrates creating a complete CI/CD pipeline using AWS services like CodeCommit, CodeBuild, CodePipeline, and CodeDeploy. The pipeline automates code deployment for an application hosted on EC2 instances.
+
+Step 1: Prerequisites
+AWS Account: Ensure you have access to an AWS account with appropriate permissions.
+IAM Role Configuration: Create IAM roles with required permissions for each service:
+CodePipeline Role: Access to CodeBuild, CodeDeploy, and S3.
+CodeBuild Role: Access to build artifacts and logs.
+CodeDeploy Role: Access to deploy applications on target instances.
+EC2 Instances: Set up EC2 instances with the application environment (e.g., Apache for a web app).
+Install the CodeDeploy Agent on these instances.
+Step 2: Create a Code Repository in CodeCommit
+Open the AWS Management Console and go to CodeCommit.
+Create a repository for your application code (e.g., MyAppRepo).
+Clone the repository to your local machine and push your application code:
+bash
+Copy code
+git clone https://git-codecommit.<region>.amazonaws.com/v1/repos/MyAppRepo
+cd MyAppRepo
+git add .
+git commit -m "Initial commit"
+git push origin main
+Step 3: Set Up Build Automation with CodeBuild
+Go to CodeBuild in the AWS Console.
+Create a build project:
+Source: Select CodeCommit and choose your repository.
+Environment: Choose a managed image (e.g., Amazon Linux 2 with Node.js/Java/etc.).
+Buildspec File: Use a buildspec.yml file in your repository or define inline.
+Example buildspec.yml:
+yaml
+Copy code
+version: 0.2
+phases:
+  install:
+    commands:
+      - echo Installing dependencies...
+      - npm install
+  build:
+    commands:
+      - echo Building the application...
+      - npm run build
+artifacts:
+  files:
+    - '**/*'
+Save the project.
+Step 4: Configure CodeDeploy for Deployment
+Open CodeDeploy and create an application:
+Application name: MyAppDeployment.
+Compute platform: EC2/On-premises.
+Create a deployment group:
+Deployment type: Choose In-place deployment or Blue/Green deployment.
+Attach your EC2 instances to the group using tags or instance IDs.
+Specify the IAM role for CodeDeploy.
+Add an appspec.yml file to your repository to define the deployment process:
+yaml
+Copy code
+version: 0.0
+os: linux
+files:
+  - source: /
+    destination: /var/www/html
+hooks:
+  BeforeInstall:
+    - location: scripts/before_install.sh
+      timeout: 300
+      runas: root
+  AfterInstall:
+    - location: scripts/after_install.sh
+      timeout: 300
+      runas: root
+Step 5: Set Up CodePipeline
+Open CodePipeline in the AWS Console and create a pipeline:
+Source Stage: Select CodeCommit as the source provider, and choose your repository and branch.
+Build Stage: Add CodeBuild as the build provider, and select your build project.
+Deploy Stage: Use CodeDeploy as the deploy provider, and choose the application and deployment group created earlier.
+Review and create the pipeline.
+Step 6: Test the CI/CD Pipeline
+Make changes to your code and push them to the CodeCommit repository:
+bash
+Copy code
+git add .
+git commit -m "Updated application"
+git push origin main
+The pipeline is automatically triggered:
+Source Stage: Fetches the latest code from CodeCommit.
+Build Stage: Builds the code and prepares artifacts using CodeBuild.
+Deploy Stage: Deploys the application to EC2 instances using CodeDeploy.
+Step 7: Monitor and Optimize
+Monitoring:
+Use Amazon CloudWatch Logs to view build and deployment logs.
+Use CodePipeline console to track the progress of each stage.
+Optimize:
+Add approval actions for manual interventions.
+Integrate tests (e.g., unit tests, load tests) in the build phase.
+Use notifications (e.g., Amazon SNS) for pipeline events.
+Diagram of the CI/CD Process
+scss
+Copy code
+CodeCommit (Source)
+     ↓
+CodePipeline (Orchestrator)
+     ↓
+CodeBuild (Build & Test)
+     ↓
+CodeDeploy (Deploy)
+     ↓
+EC2 Instances
