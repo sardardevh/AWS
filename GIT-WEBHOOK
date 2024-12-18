@@ -1,0 +1,46 @@
+When code is pushed to a Git repository, Jenkins identifies the changes through webhooks or polling, depending on the setup. Here's how it works:
+
+1. Using Webhooks (Preferred Method)
+A webhook is a trigger set up in the Git repository (e.g., GitHub, GitLab, or Bitbucket) to notify Jenkins of a code push.
+
+Process:
+Webhook Configuration in Git Repository:
+
+Configure a webhook in the Git repository settings to send HTTP POST requests to Jenkins when a specific event occurs (e.g., push).
+The URL for the webhook typically looks like:
+perl
+Copy code
+http://<jenkins-server>/github-webhook/
+Jenkins Pipeline Configuration:
+
+Jenkins jobs or pipelines are configured to listen for these webhook events.
+Upon receiving the notification, Jenkins fetches the latest code changes from the repository and triggers the build process.
+Advantages:
+
+Real-time triggering of jobs.
+No need for frequent polling, reducing server load.
+2. Using Polling
+Jenkins can periodically poll the Git repository to check for changes.
+
+Process:
+Polling Configuration in Jenkins:
+
+In the Jenkins job, configure the "Build Triggers" section with the Poll SCM option.
+Specify a polling schedule using a cron-like syntax (e.g., H/5 * * * * to check every 5 minutes).
+How It Works:
+
+Jenkins compares the current state of the repository with the last known state.
+If new commits are detected, Jenkins fetches the changes and starts the build.
+Disadvantages:
+
+Delayed builds due to the polling interval.
+Higher server load, especially for repositories with frequent changes.
+3. Git Plugin in Jenkins
+The Git Plugin is used to connect Jenkins to the repository. It supports both webhooks and polling. It also manages tasks like cloning the repository, checking out specific branches, or fetching commits.
+
+How Jenkins Executes the Build After Push
+Step 1: Notification or polling identifies a new push.
+Step 2: Jenkins fetches the latest code using the Git URL and branch specified in the pipeline or job configuration.
+Step 3: Jenkins executes the build steps defined in the pipeline or job (e.g., running tests, packaging, deploying).
+Best Practice: Use Webhooks for Efficiency
+Webhooks are faster, more reliable, and reduce unnecessary load on Jenkins servers, making them the preferred approach for detecting code pushes.
