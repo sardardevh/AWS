@@ -1,4 +1,4 @@
-SonarQube Implementation
+**SonarQube Implementation**
 **1. Prerequisites**
 Ensure SonarQube is installed and running (local/on-premise/cloud instance).
 Install the SonarQube Scanner on the CI/CD server.
