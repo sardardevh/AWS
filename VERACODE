@@ -1,3 +1,7 @@
+SCA - SOFTWARE COMPOSITION ANALYSYS
+DAST- DYNAMIC APPLICATION SECURITY TESTING
+SAST - STATIC APPLICATION SECURITY TESTING 
+
 Veracode Implementation in DevOps
 Veracode is a cloud-based application security platform that offers dynamic analysis (DAST), static analysis (SAST), and software composition analysis (SCA). It provides in-depth security scanning, especially for production-level vulnerabilities.
 
